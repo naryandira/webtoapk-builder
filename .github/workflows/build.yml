@@ -33,15 +33,11 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-
       - name: Validate inputs
         shell: bash
         run: |
           python3 - <<'PY'
           import os
-          import re
           from urllib.parse import urlparse
 
           url = os.environ["WEB_URL"].strip()
@@ -62,8 +58,7 @@ jobs:
               f.write("VALIDATED_WEB_URL=" + url + "\n")
               f.write("VALIDATED_APP_NAME=" + name + "\n")
 
-          print("URL valid.")
-          print("Nama aplikasi valid.")
+          print("Input valid.")
           PY
 
       - name: Create Android project
@@ -186,6 +181,7 @@ jobs:
           import android.os.Bundle
           import android.view.View
           import android.view.ViewGroup
+          import android.view.Gravity
           import android.webkit.WebChromeClient
           import android.webkit.WebResourceError
           import android.webkit.WebResourceRequest
@@ -225,29 +221,34 @@ jobs:
 
                   val progressParams = FrameLayout.LayoutParams(
                       ViewGroup.LayoutParams.MATCH_PARENT,
-                      8
+                      8,
+                      Gravity.TOP
                   )
-                  progressParams.gravity = android.view.Gravity.TOP
 
-                  errorView = TextView(this)
-                  errorView.text = "Website gagal dimuat. Periksa koneksi internet lalu coba lagi."
-                  errorView.textSize = 16f
-                  errorView.setTextColor(Color.DKGRAY)
-                  errorView.gravity = android.view.Gravity.CENTER
-                  errorView.setPadding(32, 32, 32, 32)
-                  errorView.visibility = View.GONE
+                  errorView = TextView(this).apply {
+                      text = "Website gagal dimuat. Periksa koneksi internet lalu coba lagi."
+                      textSize = 16f
+                      setTextColor(Color.DKGRAY)
+                      gravity = Gravity.CENTER
+                      setPadding(32, 32, 32, 32)
+                      visibility = View.GONE
+                  }
 
                   webView.settings.apply {
                       javaScriptEnabled = true
                       domStorageEnabled = true
                       loadsImagesAutomatically = true
-                      mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                      mixedContentMode =
+                          WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
                       javaScriptCanOpenWindowsAutomatically = false
                       setSupportMultipleWindows(false)
                   }
 
                   webView.webChromeClient = object : WebChromeClient() {
-                      override fun onProgressChanged(view: WebView?, newProgress: Int) {
+                      override fun onProgressChanged(
+                          view: WebView?,
+                          newProgress: Int
+                      ) {
                           progressBar.visibility =
                               if (newProgress < 100) View.VISIBLE else View.GONE
                       }
@@ -318,56 +319,63 @@ jobs:
           }
           EOF
 
-      - name: Configure app URL and name
+      - name: Configure URL and app name
         shell: bash
         run: |
           python3 - <<'PY'
           import os
-          from pathlib import Path
           import json
-          import re
           import xml.sax.saxutils
+          from pathlib import Path
 
           url = os.environ["VALIDATED_WEB_URL"]
-          app_name = os.environ["VALIDATED_APP_NAME"]
-
-          # Escape the URL as a valid Java/Kotlin string literal.
-          url_literal = json.dumps(url, ensure_ascii=True)
+          name = os.environ["VALIDATED_APP_NAME"]
 
           gradle_path = Path("app/build.gradle")
-          gradle_text = gradle_path.read_text(encoding="utf-8")
+          text = gradle_path.read_text(encoding="utf-8")
+
+          url_literal = json.dumps(url, ensure_ascii=True)
+          gradle_literal = "'" + url_literal.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
           marker = "versionName '1.0'"
-          if marker not in gradle_text:
+          if marker not in text:
               raise SystemExit("Tidak menemukan versionName di app/build.gradle")
 
-          gradle_text = gradle_text.replace(
+          text = text.replace(
               marker,
-              marker + "\n                  buildConfigField 'String', 'WEB_URL', "
-              + "'" + url_literal.replace("\\", "\\\\").replace("'", "\\'") + "'",
+              marker + "\n        buildConfigField 'String', 'WEB_URL', " + gradle_literal,
               1
           )
 
-          gradle_path.write_text(gradle_text, encoding="utf-8")
+          gradle_path.write_text(text, encoding="utf-8")
 
           manifest_path = Path("app/src/main/AndroidManifest.xml")
-          manifest_text = manifest_path.read_text(encoding="utf-8")
+          manifest = manifest_path.read_text(encoding="utf-8")
 
-          safe_name = xml.sax.saxutils.escape(app_name, {'"': '&quot;'})
-          manifest_text = manifest_text.replace(
+          safe_name = xml.sax.saxutils.escape(name, {'"': '&quot;'})
+          manifest = manifest.replace(
               'android:label="WebToApk"',
-              'android:label="' + safe_name + '"'
+              'android:label="' + safe_name + '"',
+              1
           )
 
-          manifest_path.write_text(manifest_text, encoding="utf-8")
-
-          print("Konfigurasi URL dan nama aplikasi selesai.")
+          manifest_path.write_text(manifest, encoding="utf-8")
+          print("URL dan nama aplikasi berhasil dikonfigurasi.")
           PY
+
+      - name: Setup Gradle 8.2
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Generate Gradle Wrapper
+        shell: bash
+        run: |
+          gradle wrapper --gradle-version 8.2
 
       - name: Build APK
         shell: bash
         run: |
-          gradle assembleDebug --stacktrace
+          ./gradlew --version
+          ./gradlew assembleDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
