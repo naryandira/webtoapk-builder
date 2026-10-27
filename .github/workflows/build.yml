@@ -1,23 +1,23 @@
 name: Build WebView APK
 
 on:
-workflow_dispatch:
-inputs:
-url:
-description: "URL website"
-required: true
-type: string
-appName:
-description: "Nama aplikasi"
-required: true
-type: string
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "URL website"
+        required: true
+        type: string
+      appName:
+        description: "Nama aplikasi"
+        required: true
+        type: string
 
 permissions:
-contents: read
+  contents: read
 
 jobs:
-build:
-runs-on: ubuntu-latest
+  build:
+    runs-on: ubuntu-latest
 
 env:
   APP_NAME: ${{ inputs.appName }}
