@@ -1,66 +1,103 @@
 name: Build APK
-
 on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'URL Website'
+        description: 'Website URL'
         required: true
+        type: string
       appName:
-        description: 'Nama APK'
+        description: 'App Name'
         required: true
         default: 'MyApp'
+        type: string
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup JDK 17
+      - uses: actions/checkout@v4
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
-
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
 
-      - name: Build WebView APK
+      - name: Create Android Project
         run: |
-          APP_NAME="${{ github.event.inputs.appName }}"
-          URL="${{ github.event.inputs.url }}"
-          echo "Building $APP_NAME for $URL"
-          
-          # Bikin project android simpel
           mkdir -p app/src/main/java/com/webtoapk/app
-          mkdir -p app/src/main/res/layout
-          
-          cat > app/src/main/java/com/webtoapk/app/MainActivity.java <<EOF
-          package com.webtoapk.app;
-          import android.os.Bundle;
-          import android.webkit.WebView;
-          import android.webkit.WebViewClient;
-          import androidx.appcompat.app.AppCompatActivity;
-          public class MainActivity extends AppCompatActivity {
-              @Override
-              protected void onCreate(Bundle savedInstanceState) {
-                  super.onCreate(savedInstanceState);
-                  WebView webView = new WebView(this);
-                  webView.getSettings().setJavaScriptEnabled(true);
-                  webView.setWebViewClient(new WebViewClient());
-                  webView.loadUrl("$URL");
-                  setContentView(webView);
-              }
+          cat > settings.gradle <<'EOF'
+          include ':app'
+          EOF
+          cat > build.gradle <<'EOF'
+          buildscript {
+            repositories { google(); mavenCentral() }
+            dependencies {
+              classpath 'com.android.tools.build:gradle:8.2.2'
+              classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22'
+            }
+          }
+          allprojects { repositories { google(); mavenCentral() } }
+          EOF
+          cat > app/build.gradle <<'EOF'
+          plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android' }
+          android {
+            namespace 'com.webtoapk.app'
+            compileSdk 34
+            defaultConfig {
+              applicationId "com.webtoapk.app"
+              minSdk 21
+              targetSdk 34
+              versionCode 1
+              versionName "1.0"
+            }
+            buildTypes { release { minifyEnabled false } }
+            compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+            kotlinOptions { jvmTarget = '17' }
+          }
+          dependencies {
+            implementation 'androidx.core:core-ktx:1.12.0'
+            implementation 'androidx.appcompat:appcompat:1.6.1'
+            implementation 'com.google.android.material:material:1.11.0'
           }
           EOF
-          
-          echo "APK Build simulation for $APP_NAME - $URL" > ${APP_NAME}.apk
-          echo "Ini nanti diganti build gradle beneran, tapi buat test trigger dulu"
+          cat > app/src/main/AndroidManifest.xml <<EOF
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.INTERNET"/>
+            <application android:allowBackup="true" android:label="${{ inputs.appName }}" android:theme="@android:style/Theme.NoTitleBar">
+              <activity android:name=".MainActivity" android:exported="true">
+                <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+              </activity>
+            </application>
+          </manifest>
+          EOF
+          cat > app/src/main/java/com/webtoapk/app/MainActivity.kt <<'KOT'
+          package com.webtoapk.app
+          import android.os.Bundle
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
+          import androidx.appcompat.app.AppCompatActivity
+          class MainActivity : AppCompatActivity() {
+            override fun onCreate(savedInstanceState: Bundle?) {
+              super.onCreate(savedInstanceState)
+              val wv = WebView(this)
+              wv.settings.javaScriptEnabled = true
+              wv.webViewClient = WebViewClient()
+              setContentView(wv)
+              wv.loadUrl("${{ inputs.url }}")
+            }
+          }
+          KOT
+
+      - name: Build Debug APK
+        run: gradle assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.inputs.appName }}-APK
-          path: "*.apk"
+          name: ${{ inputs.appName }}-apk
+          path: app/build/outputs/apk/debug/*.apk
