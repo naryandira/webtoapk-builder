@@ -1,107 +1,380 @@
 name: Build APK
+
 on:
   workflow_dispatch:
     inputs:
       url:
-        description: Website URL
+        description: "Website URL (contoh: https://google.com)"
         required: true
         type: string
       appName:
-        description: App Name
+        description: "App Name"
         required: true
-        default: MyApp
+        default: "MyApp"
         type: string
+
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+
     env:
       APP_NAME: ${{ inputs.appName }}
       WEB_URL: ${{ inputs.url }}
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
-      - uses: gradle/actions/setup-gradle@v3
-        with:
-          gradle-version: 8.5
+          java-version: "17"
+          distribution: temurin
 
-      - name: Create project
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.5"
+
+      - name: Validate inputs
+        shell: bash
         run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          import re
+          from urllib.parse import urlparse
+
+          url = os.environ["WEB_URL"].strip()
+          name = os.environ["APP_NAME"].strip()
+
+          parsed = urlparse(url)
+
+          if parsed.scheme not in ("http", "https") or not parsed.hostname:
+              raise SystemExit(
+                  "URL tidak valid. Gunakan URL lengkap, misalnya https://google.com"
+              )
+
+          if not name or len(name) > 50:
+              raise SystemExit(
+                  "Nama aplikasi harus berisi 1 sampai 50 karakter."
+              )
+
+          if any(ord(c) < 32 for c in name):
+              raise SystemExit("Nama aplikasi mengandung karakter yang tidak valid.")
+
+          with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
+              f.write("VALIDATED_WEB_URL=" + url + "\n")
+              f.write("VALIDATED_APP_NAME=" + name + "\n")
+          PY
+
+      - name: Create Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+
           mkdir -p app/src/main/java/com/webtoapk/app
-          cat > settings.gradle <<EOF
-          include ':app'
-          EOF
-          cat > build.gradle <<EOF
-          buildscript {
-            repositories { google(); mavenCentral() }
-            dependencies {
-              classpath 'com.android.tools.build:gradle:7.4.2'
-              classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.0'
-            }
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
           }
-          allprojects { repositories { google(); mavenCentral() } }
+
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+
+          rootProject.name = "WebToAPK"
+          include(":app")
           EOF
-          cat > app/build.gradle <<EOF
-          plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android' }
+
+          cat > gradle.properties <<'EOF'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.2.2' apply false
+              id 'org.jetbrains.kotlin.android' version '1.9.22' apply false
+          }
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
+          }
+
           android {
-            namespace 'com.webtoapk.app'
-            compileSdk 34
-            defaultConfig {
-              applicationId "com.webtoapk.app"
-              minSdk 21
-              targetSdk 34
-              versionCode 1
-              versionName "1.0"
-            }
-            buildTypes { release { minifyEnabled false } }
-            compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
-            kotlinOptions { jvmTarget = '17' }
+              namespace 'com.webtoapk.app'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId 'com.webtoapk.app'
+                  minSdk 21
+                  targetSdk 34
+                  versionCode 1
+                  versionName '1.0'
+              }
+
+              buildTypes {
+                  debug {
+                      minifyEnabled false
+                  }
+
+                  release {
+                      minifyEnabled false
+                  }
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
           }
+
           dependencies {
-            implementation 'androidx.core:core-ktx:1.12.0'
-            implementation 'androidx.appcompat:appcompat:1.6.1'
+              implementation 'androidx.core:core-ktx:1.12.0'
+              implementation 'androidx.appcompat:appcompat:1.6.1'
           }
           EOF
-          cat > app/src/main/AndroidManifest.xml <<EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
           <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-            <uses-permission android:name="android.permission.INTERNET" />
-            <application android:label="$APP_NAME" android:theme="@android:style/Theme.NoTitleBar">
-              <activity android:name=".MainActivity" android:exported="true">
-                <intent-filter>
-                  <action android:name="android.intent.action.MAIN" />
-                  <category android:name="android.intent.category.LAUNCHER" />
-                </intent-filter>
-              </activity>
-            </application>
+
+              <uses-permission android:name="android.permission.INTERNET" />
+
+              <application
+                  android:label="${VALIDATED_APP_NAME}"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar"
+                  android:usesCleartextTraffic="false">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+
+                  </activity>
+              </application>
           </manifest>
           EOF
-          cat > app/src/main/java/com/webtoapk/app/MainActivity.kt <<EOF
+
+          cat > app/src/main/java/com/webtoapk/app/MainActivity.kt <<'EOF'
           package com.webtoapk.app
+
+          import android.annotation.SuppressLint
+          import android.graphics.Bitmap
           import android.os.Bundle
+          import android.view.View
+          import android.webkit.WebChromeClient
+          import android.webkit.WebResourceError
+          import android.webkit.WebResourceRequest
           import android.webkit.WebView
           import android.webkit.WebViewClient
+          import android.widget.ProgressBar
+          import android.widget.TextView
+          import android.widget.FrameLayout
           import androidx.appcompat.app.AppCompatActivity
+
           class MainActivity : AppCompatActivity() {
-            override fun onCreate(savedInstanceState: Bundle?) {
-              super.onCreate(savedInstanceState)
-              val wv = WebView(this)
-              wv.settings.javaScriptEnabled = true
-              wv.webViewClient = WebViewClient()
-              setContentView(wv)
-              wv.loadUrl("$WEB_URL")
-            }
+
+              private lateinit var webView: WebView
+              private lateinit var progressBar: ProgressBar
+              private lateinit var errorView: TextView
+
+              @SuppressLint("SetJavaScriptEnabled")
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+
+                  val root = FrameLayout(this)
+
+                  webView = WebView(this)
+                  progressBar = ProgressBar(
+                      this,
+                      null,
+                      android.R.attr.progressBarStyleHorizontal
+                  )
+                  errorView = TextView(this).apply {
+                      text = "Halaman gagal dimuat.\nPeriksa koneksi internet lalu coba lagi."
+                      textSize = 16f
+                      gravity = android.view.Gravity.CENTER
+                      visibility = View.GONE
+                      setOnClickListener {
+                          visibility = View.GONE
+                          webView.reload()
+                      }
+                  }
+
+                  root.addView(
+                      webView,
+                      FrameLayout.LayoutParams(
+                          FrameLayout.LayoutParams.MATCH_PARENT,
+                          FrameLayout.LayoutParams.MATCH_PARENT
+                      )
+                  )
+
+                  root.addView(
+                      progressBar,
+                      FrameLayout.LayoutParams(
+                          FrameLayout.LayoutParams.MATCH_PARENT,
+                          6
+                      )
+                  )
+
+                  root.addView(
+                      errorView,
+                      FrameLayout.LayoutParams(
+                          FrameLayout.LayoutParams.MATCH_PARENT,
+                          FrameLayout.LayoutParams.MATCH_PARENT
+                      )
+                  )
+
+                  setContentView(root)
+
+                  webView.settings.javaScriptEnabled = true
+                  webView.settings.domStorageEnabled = true
+                  webView.settings.allowFileAccess = false
+                  webView.settings.allowContentAccess = false
+                  webView.settings.javaScriptCanOpenWindowsAutomatically = false
+                  webView.settings.setSupportMultipleWindows(false)
+
+                  webView.webChromeClient = WebChromeClient()
+
+                  webView.webViewClient = object : WebViewClient() {
+
+                      override fun onPageStarted(
+                          view: WebView?,
+                          url: String?,
+                          favicon: Bitmap?
+                      ) {
+                          progressBar.visibility = View.VISIBLE
+                          errorView.visibility = View.GONE
+                      }
+
+                      override fun onPageFinished(
+                          view: WebView?,
+                          url: String?
+                      ) {
+                          progressBar.visibility = View.GONE
+                      }
+
+                      override fun onReceivedError(
+                          view: WebView?,
+                          request: WebResourceRequest?,
+                          error: WebResourceError?
+                      ) {
+                          super.onReceivedError(view, request, error)
+
+                          if (request?.isForMainFrame == true) {
+                              progressBar.visibility = View.GONE
+                              errorView.visibility = View.VISIBLE
+                          }
+                      }
+                  }
+
+                  if (savedInstanceState != null) {
+                      webView.restoreState(savedInstanceState)
+                  } else {
+                      webView.loadUrl(BuildConfig.WEB_URL)
+                  }
+              }
+
+              override fun onSaveInstanceState(outState: Bundle) {
+                  webView.saveState(outState)
+                  super.onSaveInstanceState(outState)
+              }
+
+              @Suppress("DEPRECATION")
+              override fun onBackPressed() {
+                  if (::webView.isInitialized && webView.canGoBack()) {
+                      webView.goBack()
+                  } else {
+                      super.onBackPressed()
+                  }
+              }
+
+              override fun onDestroy() {
+                  if (::webView.isInitialized) {
+                      webView.destroy()
+                  }
+                  super.onDestroy()
+              }
           }
           EOF
 
-      - name: Build APK
-        run: gradle assembleDebug
+      - name: Configure app values
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      - name: Upload
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          url = os.environ["VALIDATED_WEB_URL"]
+
+          # Escape URL safely for a Kotlin string literal.
+          escaped = (
+              url.replace("\\", "\\\\")
+                 .replace('"', '\\"')
+                 .replace("$", "\\$")
+          )
+
+          path = Path("app/build.gradle")
+          text = path.read_text(encoding="utf-8")
+
+          text = text.replace(
+              "versionName '1.0'",
+              "versionName '1.0'\n"
+              "              buildConfigField 'String', 'WEB_URL', "
+              f"'{chr(34)}{escaped}{chr(34)}'"
+          )
+
+          text = text.replace(
+              "compileSdk 34",
+              "compileSdk 34\n              buildFeatures {{ buildConfig true }}"
+          )
+
+          path.write_text(text, encoding="utf-8")
+
+          manifest = Path("app/src/main/AndroidManifest.xml")
+          content = manifest.read_text(encoding="utf-8")
+          content = content.replace(
+              '${VALIDATED_APP_NAME}',
+              os.environ["VALIDATED_APP_NAME"]
+          )
+          manifest.write_text(content, encoding="utf-8")
+          PY
+
+      - name: Build APK
+        run: gradle assembleDebug --stacktrace
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: APK-${{ inputs.appName }}
           path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
