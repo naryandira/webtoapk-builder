@@ -3,18 +3,20 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'Website URL'
+        description: Website URL
         required: true
         type: string
       appName:
-        description: 'App Name'
+        description: App Name
         required: true
-        default: 'MyApp'
+        default: MyApp
         type: string
-
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      APP_NAME: ${{ inputs.appName }}
+      WEB_URL: ${{ inputs.url }}
     steps:
       - uses: actions/checkout@v4
       - name: Setup Java 17
@@ -22,28 +24,27 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.5
 
-      - name: Create Android Project
+      - name: Create project
         run: |
           mkdir -p app/src/main/java/com/webtoapk/app
-          cat > settings.gradle <<'EOF'
+          cat > settings.gradle <<EOF
           include ':app'
           EOF
-          cat > build.gradle <<'EOF'
+          cat > build.gradle <<EOF
           buildscript {
             repositories { google(); mavenCentral() }
             dependencies {
-              classpath 'com.android.tools.build:gradle:8.2.2'
-              classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22'
+              classpath 'com.android.tools.build:gradle:7.4.2'
+              classpath 'org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.0'
             }
           }
           allprojects { repositories { google(); mavenCentral() } }
           EOF
-          cat > app/build.gradle <<'EOF'
+          cat > app/build.gradle <<EOF
           plugins { id 'com.android.application'; id 'org.jetbrains.kotlin.android' }
           android {
             namespace 'com.webtoapk.app'
@@ -62,20 +63,23 @@ jobs:
           dependencies {
             implementation 'androidx.core:core-ktx:1.12.0'
             implementation 'androidx.appcompat:appcompat:1.6.1'
-            implementation 'com.google.android.material:material:1.11.0'
           }
           EOF
           cat > app/src/main/AndroidManifest.xml <<EOF
+          <?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-            <uses-permission android:name="android.permission.INTERNET"/>
-            <application android:allowBackup="true" android:label="${{ inputs.appName }}" android:theme="@android:style/Theme.NoTitleBar">
+            <uses-permission android:name="android.permission.INTERNET" />
+            <application android:label="$APP_NAME" android:theme="@android:style/Theme.NoTitleBar">
               <activity android:name=".MainActivity" android:exported="true">
-                <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN" />
+                  <category android:name="android.intent.category.LAUNCHER" />
+                </intent-filter>
               </activity>
             </application>
           </manifest>
           EOF
-          cat > app/src/main/java/com/webtoapk/app/MainActivity.kt <<'KOT'
+          cat > app/src/main/java/com/webtoapk/app/MainActivity.kt <<EOF
           package com.webtoapk.app
           import android.os.Bundle
           import android.webkit.WebView
@@ -88,16 +92,16 @@ jobs:
               wv.settings.javaScriptEnabled = true
               wv.webViewClient = WebViewClient()
               setContentView(wv)
-              wv.loadUrl("${{ inputs.url }}")
+              wv.loadUrl("$WEB_URL")
             }
           }
-          KOT
+          EOF
 
-      - name: Build Debug APK
+      - name: Build APK
         run: gradle assembleDebug
 
-      - name: Upload APK
+      - name: Upload
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ inputs.appName }}-apk
+          name: APK-${{ inputs.appName }}
           path: app/build/outputs/apk/debug/*.apk
