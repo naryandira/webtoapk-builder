@@ -40,8 +40,8 @@ jobs:
           import os
           from urllib.parse import urlparse
 
-          url = os.environ["WEB_URL"].strip()
-          name = os.environ["APP_NAME"].strip()
+          url = os.environ["url"].strip()
+          name = os.environ["appName"].strip()
 
           parsed = urlparse(url)
 
