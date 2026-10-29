@@ -93,6 +93,14 @@ jobs:
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
               <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+              <uses-permission android:name="android.permission.CAMERA" />
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+              <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+              <uses-feature android:name="android.hardware.camera" android:required="false" />
+              <uses-feature android:name="android.hardware.microphone" android:required="false" />
               <application
                   android:label="WebToApk"
                   android:theme="@android:style/Theme.Material.Light.NoActionBar"
@@ -100,7 +108,8 @@ jobs:
                   android:hardwareAccelerated="true">
                   <activity
                       android:name=".MainActivity"
-                      android:configChanges="orientation|screenSize|keyboardHidden"
+                      android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize|uiMode"
+                      android:windowSoftInputMode="adjustResize"
                       android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
@@ -114,27 +123,46 @@ jobs:
           cat > app/src/main/java/com/webtoapk/app/MainActivity.kt <<'EOF'
           package com.webtoapk.app
 
+          import android.Manifest
           import android.annotation.SuppressLint
           import android.app.Activity
+          import android.app.DownloadManager
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
           import android.graphics.Color
+          import android.net.Uri
+          import android.os.Build
           import android.os.Bundle
+          import android.os.Environment
           import android.view.Gravity
           import android.view.View
           import android.view.ViewGroup
+          import android.webkit.CookieManager
+          import android.webkit.GeolocationPermissions
+          import android.webkit.PermissionRequest
+          import android.webkit.URLUtil
+          import android.webkit.ValueCallback
           import android.webkit.WebChromeClient
+          import android.webkit.WebResourceRequest
           import android.webkit.WebSettings
           import android.webkit.WebView
           import android.webkit.WebViewClient
           import android.widget.FrameLayout
           import android.widget.ProgressBar
+          import android.widget.Toast
 
           class MainActivity : Activity() {
               private lateinit var webView: WebView
+              private lateinit var root: FrameLayout
+              private var customView: View? = null
+              private var customCb: WebChromeClient.CustomViewCallback? = null
+              private var fileCb: ValueCallback<Array<Uri>>? = null
 
               @SuppressLint("SetJavaScriptEnabled")
               override fun onCreate(savedInstanceState: Bundle?) {
                   super.onCreate(savedInstanceState)
-                  val root = FrameLayout(this)
+                  root = FrameLayout(this)
                   root.setBackgroundColor(Color.WHITE)
 
                   webView = WebView(this)
@@ -144,14 +172,118 @@ jobs:
                   webView.settings.apply {
                       javaScriptEnabled = true
                       domStorageEnabled = true
+                      allowFileAccess = true
+                      useWideViewPort = true
+                      loadWithOverviewMode = true
+                      javaScriptCanOpenWindowsAutomatically = true
+                      mediaPlaybackRequiresUserGesture = false
                       mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                      userAgentString = userAgentString.replace("; wv", "").replace("Version/4.0 ", "")
                   }
+
+                  val cm = CookieManager.getInstance()
+                  cm.setAcceptCookie(true)
+                  cm.setAcceptThirdPartyCookies(webView, true)
+
                   webView.webChromeClient = object : WebChromeClient() {
                       override fun onProgressChanged(view: WebView?, p: Int) {
                           bar.visibility = if (p < 100) View.VISIBLE else View.GONE
                       }
+
+                      override fun onShowCustomView(v: View?, cb: CustomViewCallback?) {
+                          if (customView != null || v == null) {
+                              cb?.onCustomViewHidden()
+                              return
+                          }
+                          customView = v
+                          customCb = cb
+                          root.addView(v, FrameLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.MATCH_PARENT))
+                          webView.visibility = View.GONE
+                          bar.visibility = View.GONE
+                          @Suppress("DEPRECATION")
+                          window.decorView.systemUiVisibility = (View.SYSTEM_UI_FLAG_FULLSCREEN
+                                  or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                  or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                                  or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                  or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION)
+                      }
+
+                      override fun onHideCustomView() {
+                          hideCustom()
+                      }
+
+                      override fun onShowFileChooser(
+                          w: WebView?,
+                          cb: ValueCallback<Array<Uri>>?,
+                          params: FileChooserParams?
+                      ): Boolean {
+                          fileCb?.onReceiveValue(null)
+                          fileCb = cb
+                          return try {
+                              @Suppress("DEPRECATION")
+                              startActivityForResult(params!!.createIntent(), 100)
+                              true
+                          } catch (e: Exception) {
+                              fileCb = null
+                              false
+                          }
+                      }
+
+                      override fun onPermissionRequest(r: PermissionRequest?) {
+                          runOnUiThread {
+                              if (r == null) return@runOnUiThread
+                              val need = mutableListOf<String>()
+                              r.resources.forEach {
+                                  if (it == PermissionRequest.RESOURCE_VIDEO_CAPTURE) need.add(Manifest.permission.CAMERA)
+                                  if (it == PermissionRequest.RESOURCE_AUDIO_CAPTURE) need.add(Manifest.permission.RECORD_AUDIO)
+                              }
+                              val missing = need.filter {
+                                  checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+                              }
+                              if (missing.isNotEmpty()) requestPermissions(missing.toTypedArray(), 2)
+                              try { r.grant(r.resources) } catch (e: Exception) {}
+                          }
+                      }
+
+                      override fun onGeolocationPermissionsShowPrompt(
+                          origin: String?,
+                          cb: GeolocationPermissions.Callback?
+                      ) {
+                          if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)
+                              != PackageManager.PERMISSION_GRANTED) {
+                              requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), 3)
+                          }
+                          cb?.invoke(origin, true, false)
+                      }
                   }
-                  webView.webViewClient = WebViewClient()
+
+                  webView.webViewClient = object : WebViewClient() {
+                      override fun shouldOverrideUrlLoading(view: WebView?, req: WebResourceRequest?): Boolean {
+                          val u = req?.url ?: return false
+                          if (u.fragment == "dl") {
+                              startDownload(u.buildUpon().fragment(null).build().toString(), null, null)
+                              return true
+                          }
+                          val s = u.scheme ?: return false
+                          if (s in listOf("http", "https", "about", "file", "javascript", "data", "blob")) {
+                              return false
+                          }
+                          try {
+                              val i = if (s == "intent") Intent.parseUri(u.toString(), Intent.URI_INTENT_SCHEME)
+                              else Intent(Intent.ACTION_VIEW, u)
+                              startActivity(i)
+                          } catch (e: Exception) {
+                              Toast.makeText(this@MainActivity, "Aplikasi tujuan tidak ditemukan", Toast.LENGTH_SHORT).show()
+                          }
+                          return true
+                      }
+                  }
+
+                  webView.setDownloadListener { url, _, cd, mime, _ ->
+                      startDownload(url, cd, mime)
+                  }
 
                   root.addView(webView, FrameLayout.LayoutParams(
                       ViewGroup.LayoutParams.MATCH_PARENT,
@@ -164,6 +296,57 @@ jobs:
                   else webView.loadUrl(BuildConfig.WEB_URL)
               }
 
+              private fun hideCustom() {
+                  val v = customView ?: return
+                  root.removeView(v)
+                  customView = null
+                  customCb?.onCustomViewHidden()
+                  customCb = null
+                  webView.visibility = View.VISIBLE
+                  @Suppress("DEPRECATION")
+                  window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_VISIBLE
+              }
+
+              private fun startDownload(url: String, cd: String?, mime: String?) {
+                  if (Build.VERSION.SDK_INT in 23..28 &&
+                      checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                          != PackageManager.PERMISSION_GRANTED) {
+                      requestPermissions(arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE), 1)
+                      Toast.makeText(this, "Izinkan dulu, lalu klik download lagi", Toast.LENGTH_LONG).show()
+                      return
+                  }
+                  try {
+                      var name = URLUtil.guessFileName(url, cd, mime)
+                      if (!name.contains(".")) name += ".mp4"
+                      val req = DownloadManager.Request(Uri.parse(url))
+                      if (mime != null) req.setMimeType(mime)
+                      req.addRequestHeader("User-Agent", webView.settings.userAgentString)
+                      val ck = CookieManager.getInstance().getCookie(url)
+                      if (ck != null) req.addRequestHeader("Cookie", ck)
+                      req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                      req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
+                      (getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(req)
+                      Toast.makeText(this, "Mengunduh: $name", Toast.LENGTH_SHORT).show()
+                  } catch (e: Exception) {
+                      Toast.makeText(this, "Gagal download", Toast.LENGTH_SHORT).show()
+                  }
+              }
+
+              @Suppress("DEPRECATION")
+              override fun onActivityResult(req: Int, res: Int, data: Intent?) {
+                  if (req == 100) {
+                      fileCb?.onReceiveValue(WebChromeClient.FileChooserParams.parseResult(res, data))
+                      fileCb = null
+                  } else {
+                      super.onActivityResult(req, res, data)
+                  }
+              }
+
+              override fun onPause() {
+                  CookieManager.getInstance().flush()
+                  super.onPause()
+              }
+
               override fun onSaveInstanceState(outState: Bundle) {
                   webView.saveState(outState)
                   super.onSaveInstanceState(outState)
@@ -171,7 +354,11 @@ jobs:
 
               @Suppress("DEPRECATION")
               override fun onBackPressed() {
-                  if (webView.canGoBack()) webView.goBack() else super.onBackPressed()
+                  when {
+                      customView != null -> hideCustom()
+                      webView.canGoBack() -> webView.goBack()
+                      else -> super.onBackPressed()
+                  }
               }
 
               override fun onDestroy() {
