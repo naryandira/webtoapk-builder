@@ -1,0 +1,227 @@
+name: Build WebView APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      website_url:
+        description: "URL website"
+        required: true
+        type: string
+      app_name:
+        description: "Nama aplikasi"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      APP_NAME: ${{ inputs.app_name }}
+      WEB_URL: ${{ inputs.website_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.2"
+
+      - name: Create project
+        shell: bash
+        run: |
+          mkdir -p app/src/main/java/com/webtoapk/app
+
+          cat > settings.gradle <<'EOF'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = "WebToApk"
+          include(":app")
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          EOF
+
+          cat > build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application' version '8.2.2' apply false
+              id 'org.jetbrains.kotlin.android' version '1.9.22' apply false
+          }
+          EOF
+
+          cat > app/build.gradle <<'EOF'
+          plugins {
+              id 'com.android.application'
+              id 'org.jetbrains.kotlin.android'
+          }
+          android {
+              namespace 'com.webtoapk.app'
+              compileSdk 34
+              defaultConfig {
+                  applicationId 'com.webtoapk.app'
+                  minSdk 23
+                  targetSdk 34
+                  versionCode 1
+                  versionName '1.0'
+              }
+              buildFeatures { buildConfig true }
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+              kotlinOptions { jvmTarget = '17' }
+          }
+          dependencies {
+              implementation 'androidx.core:core-ktx:1.12.0'
+              implementation 'androidx.appcompat:appcompat:1.6.1'
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <application
+                  android:label="WebToApk"
+                  android:theme="@android:style/Theme.Material.Light.NoActionBar"
+                  android:usesCleartextTraffic="true"
+                  android:hardwareAccelerated="true">
+                  <activity
+                      android:name=".MainActivity"
+                      android:configChanges="orientation|screenSize|keyboardHidden"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/java/com/webtoapk/app/MainActivity.kt <<'EOF'
+          package com.webtoapk.app
+
+          import android.annotation.SuppressLint
+          import android.app.Activity
+          import android.graphics.Color
+          import android.os.Bundle
+          import android.view.Gravity
+          import android.view.View
+          import android.view.ViewGroup
+          import android.webkit.WebChromeClient
+          import android.webkit.WebSettings
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
+          import android.widget.FrameLayout
+          import android.widget.ProgressBar
+
+          class MainActivity : Activity() {
+              private lateinit var webView: WebView
+
+              @SuppressLint("SetJavaScriptEnabled")
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  val root = FrameLayout(this)
+                  root.setBackgroundColor(Color.WHITE)
+
+                  webView = WebView(this)
+                  val bar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal)
+                  bar.isIndeterminate = true
+
+                  webView.settings.apply {
+                      javaScriptEnabled = true
+                      domStorageEnabled = true
+                      mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                  }
+                  webView.webChromeClient = object : WebChromeClient() {
+                      override fun onProgressChanged(view: WebView?, p: Int) {
+                          bar.visibility = if (p < 100) View.VISIBLE else View.GONE
+                      }
+                  }
+                  webView.webViewClient = WebViewClient()
+
+                  root.addView(webView, FrameLayout.LayoutParams(
+                      ViewGroup.LayoutParams.MATCH_PARENT,
+                      ViewGroup.LayoutParams.MATCH_PARENT))
+                  root.addView(bar, FrameLayout.LayoutParams(
+                      ViewGroup.LayoutParams.MATCH_PARENT, 8, Gravity.TOP))
+                  setContentView(root)
+
+                  if (savedInstanceState != null) webView.restoreState(savedInstanceState)
+                  else webView.loadUrl(BuildConfig.WEB_URL)
+              }
+
+              override fun onSaveInstanceState(outState: Bundle) {
+                  webView.saveState(outState)
+                  super.onSaveInstanceState(outState)
+              }
+
+              @Suppress("DEPRECATION")
+              override fun onBackPressed() {
+                  if (webView.canGoBack()) webView.goBack() else super.onBackPressed()
+              }
+
+              override fun onDestroy() {
+                  webView.destroy()
+                  super.onDestroy()
+              }
+          }
+          EOF
+
+      - name: Validate and configure
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, json, hashlib
+          from pathlib import Path
+          from urllib.parse import urlparse
+          from xml.sax.saxutils import escape
+
+          url = os.environ["WEB_URL"].strip()
+          name = os.environ["APP_NAME"].strip()
+          p = urlparse(url)
+          if p.scheme not in ("http", "https") or not p.netloc:
+              raise SystemExit("URL tidak valid. Gunakan http:// atau https://")
+          if not name or len(name) > 50:
+              raise SystemExit("Nama aplikasi wajib diisi, maksimal 50 karakter.")
+
+          app_id = "com.webtoapk.w" + hashlib.sha1(url.encode()).hexdigest()[:10]
+          lit = "'" + json.dumps(url).replace("\\", "\\\\").replace("'", "\\'") + "'"
+
+          g = Path("app/build.gradle")
+          t = g.read_text()
+          t = t.replace("applicationId 'com.webtoapk.app'", f"applicationId '{app_id}'", 1)
+          t = t.replace("versionName '1.0'",
+              "versionName '1.0'\n        buildConfigField 'String', 'WEB_URL', " + lit, 1)
+          g.write_text(t)
+
+          m = Path("app/src/main/AndroidManifest.xml")
+          m.write_text(m.read_text().replace(
+              'android:label="WebToApk"',
+              'android:label="' + escape(name, {'"': "&quot;"}) + '"', 1))
+          print("OK:", app_id)
+          PY
+
+      - name: Build APK
+        run: |
+          gradle wrapper --gradle-version 8.2
+          ./gradlew assembleDebug --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WebView-APK
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
